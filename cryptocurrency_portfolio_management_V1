@@ -1,0 +1,399 @@
+---
+title: "WandX - Cryptocurrency portfolio management"
+runtime: shiny
+output:
+  flexdashboard::flex_dashboard:
+  orientation: rows
+  source_code: embed
+---
+
+```{r setup, message = FALSE}
+
+library(shiny)
+library(zoo)
+library(plotly)
+library(formatR)
+library(rmarkdown)
+library(httr)
+library(jsonlite)
+library(PerformanceAnalytics)
+library(quantmod)
+library(dygraphs)
+library(dplyr)
+library(reshape2)
+library(PortfolioAnalytics)
+library(tseries)
+library(xts)
+library(RColorBrewer)
+library(lubridate)
+library(flexdashboard)
+library(rsconnect)
+
+####monthly returns of BTC
+btc <- fromJSON("https://min-api.cryptocompare.com/data/histoday?fsym=BTC&tsym=USD&allData=true")
+btc2 <- as.data.frame(btc)
+btc2 <- tail(btc2[,c(4,5)],n=41)
+
+btcreturns <- log(tail(btc2[,2], -1) / head(btc2[,2], -1))
+btcreturns <- as.data.frame(btcreturns)
+colnames(btcreturns) <- "BTC"
+rownames(btcreturns) <- seq.Date(from = as.Date(now())-40,by=1,length.out = 40)
+btcreturnsx <- xts(btcreturns,order.by = as.Date(rownames(btcreturns)))
+
+##########monthly returns of ERC20 tokens
+ajall <- data.frame()
+d <- c("QTUM","EOS","OMG","GNT","SNT","GNO","REP","MKR","PAY","ICN","BAT","DGD","BNT","SNGLS","1ST","CVC","WINGS", "RLC", "MLN", "STORJ", "HMQ", "ADT", "TKN", "TIME", "MCO", "SAN","DNT", "PLU", "LUN", "GUP", "BCAP", "SWT")
+for(i in 1:length(d))
+{
+  
+  ##b <- fromJSON("https://api.coinmarketcap.com/v1/ticker/?convert=BTC&limit=30")[i,3]
+  
+  a <- paste("https://min-api.cryptocompare.com/data/histoday?fsym=",d[i],"&tsym=BTC&allData=true",sep="")
+  aj <- fromJSON(a)$Data
+  aj[,3] <- d[i]
+  ajall <- rbind(ajall,aj[,c(1,2,3)])
+}
+abtc <- paste("https://min-api.cryptocompare.com/data/histoday?fsym=BTC&tsym=USD",sep="")
+ajbtc <- fromJSON(abtc)$Data
+
+colnames(ajall)[3] <- "token"
+m <- melt(data = ajall,id.vars=c("token","time"),variable.name = "close")
+dc <- dcast(data = m,formula = time~token+close)
+drecent <- dc[(nrow(dc)-40):nrow(dc),c(-3,-7,-9,-18,-26)]
+drecent[is.na(drecent)] <- 0
+x <- seq.Date(from=as.Date(now())-41,by = 1,length.out = 41)
+rownames(drecent) <- x
+
+##########get returns in terms of an xts
+returns <- log(tail(drecent[,2:ncol(drecent)], -1) / head(drecent[,2:ncol(drecent)], -1))
+rownames(returns) <- seq.Date(from = as.Date(now())-39,by = 1,length.out = 40)
+colnames(returns) <- c("1ST","BAT","BCAP","BNT","DGD","EOS","GNO","GNT","GUP","HMQ","ICN","LUN","MCO","MLN","OMG","PAY","PLU","QTUM","REP","RLC","SNGLS","SNT","STORJ","SWT","TIME","TKN","WINGS")
+colnames(drecent) <- colnames(returns)
+returnsx <- xts(returns,order.by = as.Date(rownames(returns)))
+
+colnames(returnsx) <- colnames(returns)
+
+#########optimization
+
+
+
+
+```
+
+Sidebar {.sidebar}
+=====================================
+  
+  ```{r}
+helpText("Choose 4 stocks and their % allocation")
+
+fluidRow(
+  column(7,
+         textInput("stock1", "Stock 1", "BAT")),
+  column(5,
+         numericInput("w1", "Portf. %", 25, min = 1, max = 100))
+)  
+
+fluidRow(
+  column(7,
+         textInput("stock2", "Stock 2", "BNT")),
+  column(5,
+         numericInput("w2", "Portf. %", 25, min = 1, max = 100))
+)
+
+fluidRow(
+  column(7,
+         textInput("stock3", "Stock 3", "DGD")),
+  column(5,
+         numericInput("w3", "Portf. %", 25, min = 1, max = 100))
+)
+
+fluidRow(
+  column(7,
+         textInput("stock4", "Stock 4", "SNT")),
+  column(5,
+         numericInput("w4", "Portf. %", 25, min = 1, max = 100))
+)
+
+helpText("Choose a start date and risk-free rate")
+
+fluidRow(
+  column(7,
+         dateInput("year", "Starting Date", "2017-06-26", format = "yyyy-mm-dd")),
+  column(5,
+         numericInput("rfr", "Risk-Free %", .5, min = 0, max = 5, step = .01))
+)
+
+selectInput("risk_level", "Choose Risk Level:",
+                   c("Low" = 3.5,
+                    "Medium" = 3.0,
+                    "High" = 2.5)
+                    )
+
+individual_stocks <- reactive({
+  req(input$stock1)
+  year <- input$year
+  stock1 <- returns[[input$stock1]]
+  req(input$stock2)
+  stock2 <- returns[[input$stock2]]
+  req(input$stock3)
+  stock3 <- returns[[input$stock3]]
+  req(input$stock4)
+  stock4 <- returns[[input$stock4]]
+  merged_returns <- returnsx[,c(input$stock1,input$stock2,input$stock3,input$stock4)]
+})
+
+portfolio_growth <- reactive({
+  w <- c(input$w1/100, input$w2/100,input$w3/100, 1-((input$w1+input$w2+input$w3)/100))
+  dollar_growth <- Return.portfolio(individual_stocks(), weights = w)
+})
+
+portfolio_growth_btc <- reactive({
+  dollar_growth_btc <- (Return.portfolio(1/btcreturns))
+})
+
+sharpe_ratio <- reactive({
+  w1 <- c(input$w1/100, input$w2/100, input$w3/100, 1-((input$w1+input$w2+input$w3)/100))
+  portfolio_monthly_returns <- Return.portfolio(individual_stocks(), weights = w1)
+  
+  #Use the built in SharpeRatio function in Performance Analytics
+  sharpe<- round(SharpeRatio(returnsx[,c(input$stock1,input$stock2,input$stock3,input$stock4)], Rf = input$rfr/100), 4)
+  sharpe[1,]
+})
+
+sp500_sharpe_ratio <- reactive ({
+  year <- input$year
+  sp500 <- btcreturns
+  sp500_monthly <- Return.portfolio(sp500)
+  sp500_sharpe<- round(SharpeRatio(btcreturnsx, Rf = 0.1/100), 4)
+  sp500_sharpe[1,]
+})
+
+nav <- reactive({
+  nav_w <- c(input$w1/100, input$w2/100, input$w3/100, 1-(input$w1+input$w2+input$w3)/100)
+  p1 <- tail(drecent,1)[input$stock1]*(tail(ajbtc,1)[[2]])
+  p2 <- tail(drecent,1)[input$stock2]*(tail(ajbtc,1)[[2]])
+  p3 <- tail(drecent,1)[input$stock3]*(tail(ajbtc,1)[[2]])
+  p4 <- tail(drecent,1)[input$stock4]*(tail(ajbtc,1)[[2]])
+  nav <- (input$w1/100)*p1 + (input$w2/100)*p2 + (input$w3/100)*p3+ (1-(input$w1+input$w2+input$w3)/100)*p4
+  round(nav,2)
+})
+
+### Optimize at a risk Level
+
+optimize_at_risk <- reactive({
+R<-returnsx[,c(input$stock1,input$stock2,input$stock3,input$stock4)]
+fundnames<-colnames(R)
+
+pspec<-portfolio.spec(assets=fundnames)
+
+### Constraints
+
+# Weight Sum = 1
+#pspec <- add.constraint(portfolio=pspec, type="full_investment")
+pspec <- add.constraint(portfolio=pspec, type="leverage", min_sum=0.99, max_sum=1.01)
+
+pspec <- add.constraint(portfolio=pspec, type="box", min=0.05, max=0.4)
+# Min = 0, Max = 1 
+#pspec <- add.constraint(portfolio=pspec, type="box")
+
+pspec <- add.constraint(portfolio=pspec, type="return", return_target=0.03)
+
+### Objectives
+pspec <- add.objective(portfolio=pspec, type="risk", name="var", risk_aversion=input$risk_level)
+pspec <- add.objective(portfolio=pspec, type="risk_budget", name="StdDev",arguments=list(p=0.95), max_prisk=0.02)
+pspec <- add.objective(portfolio=pspec, type="risk", name="StdDev",arguments=list(p=0.95))
+pspec <- add.objective(portfolio=pspec, type="return", name="mean")
+
+### Solver
+
+# The PortfolioAnalytics package currently supports random portfolios, DEoptim, pso, GenSA, and
+# ROI as back ends
+
+opt <- optimize.portfolio(R, portfolio=pspec,optimize_method = c("DEoptim", "random", "ROI", "pso", "GenSA"),search_size = 2000, trace= TRUE, momentFUN = "set.portfolio.moments")
+#opt <- optimize.portfolio(R, portfolio=pspec,optimize_method = "random")
+
+
+#chart.RiskReward(opt, risk.col="mean", return.col="StdDev", chart.assets=TRUE)
+#chart.EfficientFrontier(opt, match.col="StdDev", n.portfolios=25, type="l")
+#chart.Weights(opt)
+
+Wts<-extractWeights(opt)
+
+hist(Wts,col=colors,main="Optimized Weights",labels = c(input$stock1,input$stock2,input$stock3,input$stock4),xlab="Stocks", ylab="Weights")
+Rtn<-Return.portfolio(R,Wts)
+plot(Rtn)
+Wts
+
+})
+
+optimize <- reactive({
+R<-returnsx[,c(input$stock1,input$stock2,input$stock3,input$stock4)]
+fundnames<-colnames(R)
+
+pspec<-portfolio.spec(assets=fundnames)
+
+### Constraints
+
+# Weight Sum = 1
+#pspec <- add.constraint(portfolio=pspec, type="full_investment")
+pspec <- add.constraint(portfolio=pspec, type="leverage", min_sum=0.99, max_sum=1.01)
+
+pspec <- add.constraint(portfolio=pspec, type="box", min=0.05, max=0.4)
+# Min = 0, Max = 1 
+#pspec <- add.constraint(portfolio=pspec, type="box")
+
+pspec <- add.constraint(portfolio=pspec, type="return", return_target=0.03)
+
+### Objectives
+pspec <- add.objective(portfolio=pspec, type="risk_budget", name="StdDev",arguments=list(p=0.95), max_prisk=0.02)
+pspec <- add.objective(portfolio=pspec, type="risk", name="StdDev",arguments=list(p=0.95))
+pspec <- add.objective(portfolio=pspec, type="return", name="mean")
+
+### Solver
+
+# The PortfolioAnalytics package currently supports random portfolios, DEoptim, pso, GenSA, and
+# ROI as back ends
+
+opt <- optimize.portfolio(R, portfolio=pspec,optimize_method = c("DEoptim", "random", "ROI", "pso", "GenSA"),search_size = 2000, trace= TRUE, momentFUN = "set.portfolio.moments")
+
+#chart.RiskReward(opt, risk.col="mean", return.col="StdDev", chart.assets=TRUE)
+#chart.EfficientFrontier(opt, match.col="StdDev", n.portfolios=25, type="l")
+#chart.Weights(opt)
+
+Wts<-extractWeights(opt)
+
+hist(Wts,col=colors,main="Optimized Weights",labels = c(input$stock1,input$stock2,input$stock3,input$stock4),xlab="Stocks", ylab="Weights")
+
+Wts
+
+})
+
+```
+Optimized Portfolio
+=====================================  
+ Row {}
+-----------------------------------------------------------------------
+ ```{r}
+renderPlot({
+optimize()
+})
+
+```
+ 
+  Row {}
+-----------------------------------------------------------------------
+ ```{r}
+renderTable( rownames = FALSE, colnames = TRUE,{
+
+optimize()
+})
+
+```
+
+Optimized Portfolio at Customized Risk
+=====================================  
+ Row {}
+-----------------------------------------------------------------------
+ ```{r}
+renderPlot({
+optimize()
+})
+
+```
+ 
+  Row {}
+-----------------------------------------------------------------------
+ ```{r}
+renderTable( rownames = FALSE, colnames = TRUE,{
+
+optimize()
+})
+
+
+```
+
+
+Portfolio Performance
+=====================================  
+  
+  Row {data-height=800}
+-----------------------------------------------------------------------
+
+  
+  ```{r}
+dygraphOutput("dygraphDollarGrowth")
+
+output$dygraphDollarGrowth<-renderDygraph({
+  dygraph(portfolio_growth(), main = "Growth of $1 Invested in Your Portfolio") %>%
+    dyAxis("y", label = "$") %>%
+    dyOptions(axisLineWidth = 1.5, fillGraph = TRUE, drawGrid = TRUE)
+})
+
+```
+
+  Row {data-height=100}
+-----------------------------------------------------------------------
+
+  
+  ```{r}
+dygraphOutput("dygraphBTCGrowth")
+
+output$dygraphBTCGrowth<-renderDygraph({
+  dygraph(portfolio_growth_btc(), main = "Growth of BTC in terms of the US Dollar") %>%
+    dyAxis("y", label = "$") %>%
+    dyOptions(axisLineWidth = 1.5, fillGraph = TRUE, drawGrid = TRUE)
+})
+
+```
+
+
+
+Total Asset value
+========================================
+
+### The Sharpe Ratio of Your Portfolio
+
+```{r}
+valueBoxOutput("approvalBox1")
+output$approvalBox1<-renderValueBox({
+  valueBox(value = sharpe_ratio(), icon = "fa-line-chart", color = "green")
+})
+```
+
+### Sharpe Ratio of S&P500 in same time period
+
+```{r}
+
+valueBoxOutput("approvalBox2")
+output$approvalBox2<-renderValueBox({
+  valueBox(value = sp500_sharpe_ratio(), icon = "fa-line-chart", color = "blue")
+})
+```
+
+### Total asset value of the Portfolio in USD
+
+```{r}
+
+valueBoxOutput("approvalBox3")
+output$approvalBox3<-renderValueBox({
+  valueBox(value = nav(), icon = "fa-line-chart", color = "orange")
+})
+```
+
+
+
+
+Individual Tokens
+========================================
+  
+  ### Monthly Returns Line Chart
+  
+  ```{r, message = FALSE}
+dygraphOutput("dygraphStocksline")
+
+output$dygraphStocksline <- renderDygraph({
+  dygraph(individual_stocks(), main = "Monthly Percentage Returns") %>% 
+    dyAxis("y", label = "%") %>% 
+    dyOptions(colors = RColorBrewer::brewer.pal(3, "Set2")) 
+})
+```
